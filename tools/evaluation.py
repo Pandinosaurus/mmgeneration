@@ -1,5 +1,7 @@
+# Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import os
+import warnings
 
 import mmcv
 import torch
@@ -31,12 +33,18 @@ def parse_args():
         type=int,
         help='number of gpus to use '
         '(only applicable to non-distributed training)')
-    group_gpus.add_argument(
+    parser.add_argument(
         '--gpu-ids',
         type=int,
         nargs='+',
-        help='ids of gpus to use '
+        help='(Deprecated, please use --gpu-id) ids of gpus to use '
         '(only applicable to non-distributed training)')
+    parser.add_argument(
+        '--gpu-id',
+        type=int,
+        default=0,
+        help='id of gpu to use '
+        '(only applicable to non-distributed testing)')
     parser.add_argument('--seed', type=int, default=2021, help='random seed')
     parser.add_argument(
         '--deterministic',
@@ -54,6 +62,7 @@ def parse_args():
         '--sample-model',
         type=str,
         default='ema',
+        choices=['ema', 'orig'],
         help='use which mode (ema/orig) in sampling')
     parser.add_argument(
         '--eval',
@@ -99,9 +108,13 @@ def main():
         torch.backends.cudnn.benchmark = True
 
     if args.gpu_ids is not None:
-        cfg.gpu_ids = args.gpu_ids
+        cfg.gpu_ids = args.gpu_ids[0:1]
+        warnings.warn('`--gpu-ids` is deprecated, please use `--gpu-id`. '
+                      'Because we only support single GPU mode in '
+                      'non-distributed testing. Use the first GPU '
+                      'in `gpu_ids` now.')
     else:
-        cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
+        cfg.gpu_ids = [args.gpu_id]
 
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':
@@ -188,15 +201,27 @@ def main():
             raise RuntimeError('There is no valid dataset config to run, '
                                'please check your dataset configs.')
 
-        data_loader = build_dataloader(
-            dataset,
+        # The default loader config
+        loader_cfg = dict(
             samples_per_gpu=args.batch_size,
             workers_per_gpu=cfg.data.get('val_workers_per_gpu',
                                          cfg.data.workers_per_gpu),
             num_gpus=len(cfg.gpu_ids),
             dist=distributed,
             shuffle=True)
+        # The overall dataloader settings
+        loader_cfg.update({
+            k: v
+            for k, v in cfg.data.items() if k not in [
+                'train', 'val', 'test', 'train_dataloader', 'val_dataloader',
+                'test_dataloader'
+            ]
+        })
 
+        # specific config for test loader
+        test_loader_cfg = {**loader_cfg, **cfg.data.get('test_dataloader', {})}
+
+        data_loader = build_dataloader(dataset, **test_loader_cfg)
     if args.sample_cfg is None:
         args.sample_cfg = dict()
 

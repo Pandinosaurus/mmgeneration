@@ -112,9 +112,9 @@ class DenoisingUnet(nn.Module):
         downsample_conv (bool, optional): Whether use conv operation in
             downsample block.  Defaults to ``True``.
         upsample_cfg (dict, optional): Config for upsample blocks.
-            Defaults to ``dict(type='DenoisingDownsample')``.
-        downsample_cfg (dict, optional): Config for downsample blocks.
             Defaults to ``dict(type='DenoisingUpsample')``.
+        downsample_cfg (dict, optional): Config for downsample blocks.
+            Defaults to ``dict(type='DenoisingDownsample')``.
         attention_res (int | list[int], optional): Resolution of feature maps
             to apply attention operation. Defaults to ``[16, 8]``.
         pretrained (str | dict, optional): Path for the pretrained model or
@@ -168,7 +168,7 @@ class DenoisingUnet(nn.Module):
         self.var_mode = self.output_cfg.get('var', 'learned_range')
 
         # double output_channels to output mean and var at same time
-        out_channels = in_channels if self.var_mode is None \
+        out_channels = in_channels if 'FIXED' in self.var_mode.upper() \
             else 2 * in_channels
         self.out_channels = out_channels
 
@@ -387,7 +387,8 @@ class DenoisingUnet(nn.Module):
         if return_noise:
             output_dict['x_t'] = x_t
             output_dict['t_rescaled'] = t
-            output_dict['label'] = label
+            if self.num_classes > 0:
+                output_dict['label'] = label
 
         return output_dict
 

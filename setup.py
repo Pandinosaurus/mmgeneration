@@ -1,7 +1,9 @@
 import os
 import os.path as osp
 import re
+import shutil
 import sys
+import warnings
 from setuptools import find_packages, setup
 
 import torch
@@ -118,7 +120,57 @@ def make_cuda_ext(name, module, sources, sources_cuda=[]):
         extra_compile_args=extra_compile_args)
 
 
+def add_mim_extension():
+    """Add extra files that are required to support MIM into the package.
+
+    These files will be added by creating a symlink to the originals if the
+    package is installed in `editable` mode (e.g. pip install -e .), or by
+    copying from the originals otherwise.
+    """
+
+    # parse installment mode
+    if 'develop' in sys.argv:
+        # installed by `pip install -e .`
+        mode = 'symlink'
+    elif 'sdist' in sys.argv or 'bdist_wheel' in sys.argv:
+        # installed by `pip install .`
+        # or create source distribution by `python setup.py sdist`
+        mode = 'copy'
+    else:
+        return
+
+    filenames = ['tools', 'configs', 'demo', 'model-index.yml']
+    repo_path = osp.dirname(__file__)
+    mim_path = osp.join(repo_path, 'mmgen', '.mim')
+    os.makedirs(mim_path, exist_ok=True)
+
+    for filename in filenames:
+        if osp.exists(filename):
+            src_path = osp.join(repo_path, filename)
+            tar_path = osp.join(mim_path, filename)
+
+            if osp.isfile(tar_path) or osp.islink(tar_path):
+                os.remove(tar_path)
+            elif osp.isdir(tar_path):
+                shutil.rmtree(tar_path)
+
+            if mode == 'symlink':
+                src_relpath = osp.relpath(src_path, osp.dirname(tar_path))
+                os.symlink(src_relpath, tar_path)
+            elif mode == 'copy':
+                if osp.isfile(src_path):
+                    shutil.copyfile(src_path, tar_path)
+                elif osp.isdir(src_path):
+                    shutil.copytree(src_path, tar_path)
+                else:
+                    warnings.warn(f'Cannot copy file {src_path}.')
+            else:
+                raise ValueError(f'Invalid mode {mode}')
+    pass
+
+
 if __name__ == '__main__':
+    add_mim_extension()
     setup(
         name='mmgen',
         version=get_version(),
@@ -141,9 +193,12 @@ if __name__ == '__main__':
         author='MMGeneration Contributors',
         author_email='openmmlab@gmail.com',
         license='Apache License 2.0',
-        setup_requires=['pytest-runner', 'cython', 'numpy'],
-        tests_require=['pytest'],
         include_package_data=True,
         install_requires=parse_requirements('requirements.txt'),
         cmdclass={'build_ext': BuildExtension},
+        extras_require={
+            'all': parse_requirements('requirements.txt'),
+            'tests': parse_requirements('requirements/tests.txt'),
+            'mim': parse_requirements('requirements/mminstall.txt'),
+        },
         zip_safe=False)

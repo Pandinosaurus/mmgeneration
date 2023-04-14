@@ -1,9 +1,14 @@
+# Copyright (c) OpenMMLab. All rights reserved.
 import argparse
 import copy
+import multiprocessing as mp
 import os
 import os.path as osp
+import platform
 import time
+import warnings
 
+import cv2
 import mmcv
 import torch
 from mmcv import Config, DictAction
@@ -15,6 +20,8 @@ from mmgen.apis import set_random_seed, train_model
 from mmgen.datasets import build_dataset
 from mmgen.models import build_model
 from mmgen.utils import collect_env, get_root_logger
+
+cv2.setNumThreads(0)
 
 
 def parse_args():
@@ -31,15 +38,25 @@ def parse_args():
     group_gpus.add_argument(
         '--gpus',
         type=int,
-        help='number of gpus to use '
+        help='(Deprecated, please use --gpu-id) number of gpus to use '
         '(only applicable to non-distributed training)')
     group_gpus.add_argument(
         '--gpu-ids',
         type=int,
         nargs='+',
-        help='ids of gpus to use '
+        help='(Deprecated, please use --gpu-id) ids of gpus to use '
+        '(only applicable to non-distributed training)')
+    group_gpus.add_argument(
+        '--gpu-id',
+        type=int,
+        default=0,
+        help='id of gpu to use '
         '(only applicable to non-distributed training)')
     parser.add_argument('--seed', type=int, default=2021, help='random seed')
+    parser.add_argument(
+        '--diff_seed',
+        action='store_true',
+        help='Whether or not set different seeds for different ranks')
     parser.add_argument(
         '--deterministic',
         action='store_true',
@@ -63,12 +80,47 @@ def parse_args():
     return args
 
 
+def setup_multi_processes(cfg):
+    # set multi-process start method as `fork` to speed up the training
+    if platform.system() != 'Windows':
+        mp_start_method = cfg.get('mp_start_method', 'fork')
+        mp.set_start_method(mp_start_method)
+
+    # disable opencv multithreading to avoid system being overloaded
+    opencv_num_threads = cfg.get('opencv_num_threads', 0)
+    cv2.setNumThreads(opencv_num_threads)
+
+    # setup OMP threads
+    # This code is referred from https://github.com/pytorch/pytorch/blob/master/torch/distributed/run.py  # noqa
+    if ('OMP_NUM_THREADS' not in os.environ and cfg.data.workers_per_gpu > 1):
+        omp_num_threads = 1
+        warnings.warn(
+            f'Setting OMP_NUM_THREADS environment variable for each process '
+            f'to be {omp_num_threads} in default, to avoid your system being '
+            f'overloaded, please further tune the variable for optimal '
+            f'performance in your application as needed.')
+        os.environ['OMP_NUM_THREADS'] = str(omp_num_threads)
+
+    # setup MKL threads
+    if 'MKL_NUM_THREADS' not in os.environ and cfg.data.workers_per_gpu > 1:
+        mkl_num_threads = 1
+        warnings.warn(
+            f'Setting MKL_NUM_THREADS environment variable for each process '
+            f'to be {mkl_num_threads} in default, to avoid your system being '
+            f'overloaded, please further tune the variable for optimal '
+            f'performance in your application as needed.')
+        os.environ['MKL_NUM_THREADS'] = str(mkl_num_threads)
+
+
 def main():
     args = parse_args()
 
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
+
+    setup_multi_processes(cfg)
+
     # import modules from string list.
     if cfg.get('custom_imports', None):
         from mmcv.utils import import_modules_from_strings
@@ -87,10 +139,19 @@ def main():
                                 osp.splitext(osp.basename(args.config))[0])
     if args.resume_from is not None:
         cfg.resume_from = args.resume_from
+    if args.gpus is not None:
+        cfg.gpu_ids = range(1)
+        warnings.warn('`--gpus` is deprecated because we only support '
+                      'single GPU mode in non-distributed training. '
+                      'Use `gpus=1` now.')
     if args.gpu_ids is not None:
-        cfg.gpu_ids = args.gpu_ids
-    else:
-        cfg.gpu_ids = range(1) if args.gpus is None else range(args.gpus)
+        cfg.gpu_ids = args.gpu_ids[0:1]
+        warnings.warn('`--gpu-ids` is deprecated, please use `--gpu-id`. '
+                      'Because we only support single GPU mode in '
+                      'non-distributed training. Use the first GPU '
+                      'in `gpu_ids` now.')
+    if args.gpus is None and args.gpu_ids is None:
+        cfg.gpu_ids = [args.gpu_id]
 
     # init distributed env first, since logger depends on the dist info.
     if args.launcher == 'none':
@@ -129,8 +190,12 @@ def main():
     # set random seeds
     if args.seed is not None:
         logger.info(f'Set random seed to {args.seed}, '
-                    f'deterministic: {args.deterministic}')
-        set_random_seed(args.seed, deterministic=args.deterministic)
+                    f'deterministic: {args.deterministic}, '
+                    f'use_rank_shift: {args.diff_seed}')
+        set_random_seed(
+            args.seed,
+            deterministic=args.deterministic,
+            use_rank_shift=args.diff_seed)
     cfg.seed = args.seed
     meta['seed'] = args.seed
     meta['exp_name'] = osp.basename(args.config)
@@ -141,7 +206,7 @@ def main():
     datasets = [build_dataset(cfg.data.train)]
     if len(cfg.workflow) == 2:
         val_dataset = copy.deepcopy(cfg.data.val)
-        val_dataset.pipeline = cfg.data.train.pipeline
+        val_dataset.pipeline = cfg.data.val.pipeline
         datasets.append(build_dataset(val_dataset))
     if cfg.checkpoint_config is not None:
         # save mmgen version, config file content and class names in

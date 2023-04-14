@@ -1,3 +1,4 @@
+# Copyright (c) OpenMMLab. All rights reserved.
 import os.path as osp
 
 import numpy as np
@@ -10,6 +11,7 @@ from mmgen.core.evaluation.metrics import (FID, IS, MS_SSIM, PPL, PR, SWD,
 from mmgen.datasets import UnconditionalImageDataset, build_dataloader
 from mmgen.models import build_model
 from mmgen.models.architectures import InceptionV3
+from mmgen.utils import download_from_url
 
 # def test_inception_download():
 #     from mmgen.core.evaluation.metrics import load_inception
@@ -91,7 +93,7 @@ class TestExtractInceptionFeat:
         ]
         dataset = UnconditionalImageDataset(
             osp.join(osp.dirname(__file__), '..', 'data'), pipeline)
-        cls.data_loader = build_dataloader(dataset, 3, 4, dist=False)
+        cls.data_loader = build_dataloader(dataset, 3, 0, dist=False)
 
     def test_extr_inception_feat(self):
         feat = extract_inception_features(self.data_loader, self.inception, 5)
@@ -112,6 +114,9 @@ class TestExtractInceptionFeat:
         feature_ours = self.inception(img)[0].view(img.shape[0], -1)
 
         # Tero implementation
+        download_from_url(
+            'https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/metrics/inception-2015-12-05.pt',  # noqa
+            dest_dir='./work_dirs/cache')
         net = torch.jit.load(
             './work_dirs/cache/inception-2015-12-05.pt').eval().cuda()
         net = torch.nn.DataParallel(net)

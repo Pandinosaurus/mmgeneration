@@ -167,8 +167,16 @@ class StaticUnconditionalGAN(BaseGAN):
         set_requires_grad(self.discriminator, True)
         optimizer['discriminator'].zero_grad()
         # TODO: add noise sampler to customize noise sampling
+
+        # pass model specific training kwargs
+        g_training_kwargs = {}
+        if hasattr(self.generator, 'get_training_kwargs'):
+            g_training_kwargs.update(
+                self.generator.get_training_kwargs(phase='disc'))
+
         with torch.no_grad():
-            fake_imgs = self.generator(None, num_batches=batch_size)
+            fake_imgs = self.generator(
+                None, num_batches=batch_size, **g_training_kwargs)
 
         # disc pred for fake imgs and real_imgs
         disc_pred_fake = self.discriminator(fake_imgs)
@@ -231,7 +239,15 @@ class StaticUnconditionalGAN(BaseGAN):
         optimizer['generator'].zero_grad()
 
         # TODO: add noise sampler to customize noise sampling
-        fake_imgs = self.generator(None, num_batches=batch_size)
+
+        # pass model specific training kwargs
+        g_training_kwargs = {}
+        if hasattr(self.generator, 'get_training_kwargs'):
+            g_training_kwargs.update(
+                self.generator.get_training_kwargs(phase='gen'))
+
+        fake_imgs = self.generator(
+            None, num_batches=batch_size, **g_training_kwargs)
         disc_pred_fake_g = self.discriminator(fake_imgs)
 
         data_dict_ = dict(
@@ -269,6 +285,17 @@ class StaticUnconditionalGAN(BaseGAN):
             # loss_scaler.update will be called in runner.train()
         else:
             optimizer['generator'].step()
+
+        # update ada p
+        if hasattr(self.discriminator,
+                   'with_ada') and self.discriminator.with_ada:
+            self.discriminator.ada_aug.log_buffer[0] += batch_size
+            self.discriminator.ada_aug.log_buffer[1] += disc_pred_real.sign(
+            ).sum()
+            self.discriminator.ada_aug.update(
+                iteration=curr_iter, num_batches=batch_size)
+            log_vars_disc['augment'] = (
+                self.discriminator.ada_aug.aug_pipeline.p.data.cpu())
 
         log_vars = {}
         log_vars.update(log_vars_g)
